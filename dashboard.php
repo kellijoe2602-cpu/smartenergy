@@ -22,71 +22,91 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Handle Add/Edit Consumption
     if (isset($_POST['add_consumption']) || isset($_POST['edit_consumption'])) {
         $appliance_id = !empty($_POST['appliance_id']) ? intval($_POST['appliance_id']) : null;
-        $custom_appliance = trim($_POST['custom_appliance']);
-        $hours_used = floatval($_POST['hours_used']);
+        $custom_appliance = isset($_POST['custom_appliance']) ? trim($_POST['custom_appliance']) : '';
+        $hours_used = isset($_POST['hours_used']) ? floatval($_POST['hours_used']) : 0;
         $custom_wattage = isset($_POST['custom_wattage']) ? intval($_POST['custom_wattage']) : 0;
-        $date = $_POST['date'];
+        $start_date = $_POST['start_date'];
+        $end_date = !empty($_POST['end_date']) ? $_POST['end_date'] : $_POST['start_date'];
         $appliance_name = '';
         $wattage = 0;
-
-        if ($appliance_id) {
-            $stmt = $pdo->prepare("SELECT name, estimated_wattage FROM appliances WHERE id = ?");
-            $stmt->execute([$appliance_id]);
-            $res = $stmt->fetch();
-            $appliance_name = $res['name'];
-            $wattage = $res['estimated_wattage'] ?? $custom_wattage;
-        } else {
-            $appliance_name = $custom_appliance;
-            $wattage = $custom_wattage;
-        }
 
         // Check if manual unit entry is provided
         if (isset($_POST['manual_units']) && !empty($_POST['manual_units'])) {
             $consumption_kwh = floatval($_POST['manual_units']);
-            // If manual units, we can set wattage/hours to represent that consumption (Units = (W*H)/1000)
-            if ($wattage > 0) {
-                $hours_used = ($consumption_kwh * 1000) / $wattage;
-            } else {
-                $wattage = 1000;
-                $hours_used = $consumption_kwh;
-            }
+            $appliance_name = "Manual Input";
+            $wattage = 0;
+            $hours_used = 0;
+            $appliance_id = null;
         } else {
+            if ($appliance_id) {
+                $stmt = $pdo->prepare("SELECT name, estimated_wattage FROM appliances WHERE id = ?");
+                $stmt->execute([$appliance_id]);
+                $res = $stmt->fetch();
+                $appliance_name = $res['name'];
+                $wattage = $res['estimated_wattage'] ?? $custom_wattage;
+            } else {
+                $appliance_name = $custom_appliance;
+                $wattage = $custom_wattage;
+            }
             $consumption_kwh = ($wattage * $hours_used) / 1000;
         }
 
         if (isset($_POST['edit_consumption'])) {
             $record_id = intval($_POST['record_id']);
-            $stmt = $pdo->prepare("UPDATE energy_consumption SET appliance_id=?, appliance_name=?, hours_used=?, wattage=?, consumption_kwh=?, date_recorded=? WHERE id=? AND user_id=?");
-            $stmt->execute([$appliance_id, $appliance_name, $hours_used, $wattage, $consumption_kwh, $date, $record_id, $user_id]);
+            $stmt = $pdo->prepare("UPDATE energy_consumption SET appliance_id=?, appliance_name=?, hours_used=?, wattage=?, consumption_kwh=?, date_recorded=?, start_date=?, end_date=? WHERE id=? AND user_id=?");
+            $stmt->execute([$appliance_id, $appliance_name, $hours_used, $wattage, $consumption_kwh, $start_date, $start_date, $end_date, $record_id, $user_id]);
             $success = "Record updated!";
         } else {
-            $stmt = $pdo->prepare("INSERT INTO energy_consumption (user_id, appliance_id, appliance_name, hours_used, wattage, consumption_kwh, date_recorded) VALUES (?, ?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$user_id, $appliance_id, $appliance_name, $hours_used, $wattage, $consumption_kwh, $date]);
+            $stmt = $pdo->prepare("INSERT INTO energy_consumption (user_id, appliance_id, appliance_name, hours_used, wattage, consumption_kwh, date_recorded, start_date, end_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$user_id, $appliance_id, $appliance_name, $hours_used, $wattage, $consumption_kwh, $start_date, $start_date, $end_date]);
             $success = "Usage added! (" . number_format($consumption_kwh, 3) . " Units)";
         }
     }
 }
 
 /**
- * TANGEDCO Domestic Billing Calculation (2024-25 approx)
- * Note: TN billing is bi-monthly, but here we calculate per entry for estimation.
- * Slab 1: 0 - 100 Units: Free
- * Slab 2: 101 - 200 Units: Rs 4.50
- * Slab 3: 201 - 500 Units: Rs 6.00
- * Slab 4: Above 500 Units: Rs 8.00 - 11.00
+ * TANGEDCO Domestic Billing Calculation (2024-25 Latest Rates)
+ * TN billing is bi-monthly (every 2 months).
+ * 0 - 100 Units: Free
+ * 101 - 200 Units: Rs 4.50 per unit
+ * 201 - 400 Units: Rs 6.00 per unit
+ * 401 - 500 Units: Rs 8.00 per unit
+ * 501 - 600 Units: Rs 9.00 per unit
+ * 601 - 800 Units: Rs 10.00 per unit
+ * 801 - 1000 Units: Rs 11.00 per unit
+ * Above 1000 Units: Rs 11.00 per unit
+ * Fixed Charges: Approx Rs. 20-50 (simplified here)
  */
 function calculateTNCost($units) {
     if ($units <= 100) return 0;
+    
     $cost = 0;
+    $remaining_units = $units;
+
+    // First 100 units are always free
+    $remaining_units -= 100;
+
     if ($units <= 200) {
-        $cost = ($units - 100) * 4.50;
+        // 101-200 slab: 4.50
+        $cost += $remaining_units * 4.50;
     } elseif ($units <= 400) {
-        $cost = (100 * 4.50) + ($units - 200) * 6.00;
+        // 101-200: 4.50 (100 units) + 201-400: 6.00
+        $cost += (100 * 4.50);
+        $cost += ($units - 200) * 6.00;
     } elseif ($units <= 500) {
-        $cost = (100 * 4.50) + (200 * 6.00) + ($units - 400) * 8.00;
+        $cost += (100 * 4.50) + (200 * 6.00);
+        $cost += ($units - 400) * 8.00;
+    } elseif ($units <= 600) {
+        $cost += (100 * 4.50) + (200 * 6.00) + (100 * 8.00);
+        $cost += ($units - 500) * 9.00;
+    } elseif ($units <= 800) {
+        $cost += (100 * 4.50) + (200 * 6.00) + (100 * 8.00) + (100 * 9.00);
+        $cost += ($units - 600) * 10.00;
     } else {
-        $cost = (100 * 4.50) + (200 * 6.00) + (100 * 8.00) + ($units - 500) * 9.00;
+        $cost += (100 * 4.50) + (200 * 6.00) + (100 * 8.00) + (100 * 9.00) + (200 * 10.00);
+        $cost += ($units - 800) * 11.00;
     }
+
     return $cost;
 }
 
@@ -182,6 +202,7 @@ $history = $history_stmt->fetchAll();
             <div class="stat-card">
                 <h3>Estimated Cost (TN)</h3>
                 <div class="value">₹<?php echo number_format(calculateTNCost($total_consumption), 2); ?></div>
+                <small style="color: #6b7280; display: block; margin-top: 5px;">Based on bi-monthly slabs (First 100 Free)</small>
             </div>
         </div>
 
@@ -243,12 +264,17 @@ $history = $history_stmt->fetchAll();
 
                     <div class="form-group" style="flex: 0.5; min-width: 120px;">
                         <label>OR Manual Units</label>
-                        <input type="number" step="0.01" name="manual_units" id="form_manual_units" class="form-control" placeholder="kWh">
+                        <input type="number" step="0.01" name="manual_units" id="form_manual_units" class="form-control" placeholder="kWh" oninput="toggleApplianceSelection(this.value)">
                     </div>
 
                     <div class="form-group" style="flex: 1; min-width: 150px;">
-                        <label>Date</label>
-                        <input type="date" name="date" id="form_date" class="form-control" value="<?php echo date('Y-m-d'); ?>" required>
+                        <label>Start Date</label>
+                        <input type="date" name="start_date" id="form_start_date" class="form-control" value="<?php echo date('Y-m-d'); ?>" required>
+                    </div>
+
+                    <div class="form-group" style="flex: 1; min-width: 150px;">
+                        <label>End Date</label>
+                        <input type="date" name="end_date" id="form_end_date" class="form-control" value="<?php echo date('Y-m-d'); ?>">
                     </div>
                 </div>
                 <div style="display: flex; gap: 10px; margin-top: 10px;">
@@ -275,7 +301,17 @@ $history = $history_stmt->fetchAll();
                         <?php else: ?>
                             <?php foreach ($history as $row): ?>
                             <tr>
-                                <td><?php echo date('M d, Y', strtotime($row['date_recorded'])); ?></td>
+                                <td>
+                                    <?php 
+                                        $s_date = !empty($row['start_date']) ? $row['start_date'] : $row['date_recorded'];
+                                        $e_date = !empty($row['end_date']) ? $row['end_date'] : $row['date_recorded'];
+                                        echo date('M d', strtotime($s_date)); 
+                                        if ($s_date != $e_date) {
+                                            echo ' - ' . date('M d', strtotime($e_date));
+                                        }
+                                        echo ', ' . date('Y', strtotime($s_date));
+                                    ?>
+                                </td>
                                 <td><?php echo htmlspecialchars($row['appliance_name']); ?></td>
                                 <td><?php echo $row['hours_used']; ?> hrs <small>(<?php echo $row['wattage']; ?>W)</small></td>
                                 <td><?php echo number_format($row['consumption_kwh'], 3); ?> Units</td>
@@ -325,17 +361,35 @@ $history = $history_stmt->fetchAll();
         }
     }
 
+    function toggleApplianceSelection(value) {
+        const applianceSelect = document.getElementById('appliance_select');
+        const hoursUsed = document.getElementById('form_hours_used');
+        if (value && value > 0) {
+            applianceSelect.disabled = true;
+            applianceSelect.required = false;
+            hoursUsed.disabled = true;
+            toggleFormFields('none');
+        } else {
+            applianceSelect.disabled = false;
+            hoursUsed.disabled = false;
+        }
+    }
+
     function editRecord(record) {
         document.getElementById('form-title').innerText = 'Edit Usage Record';
         document.getElementById('form_record_id').value = record.id;
         document.getElementById('form_hours_used').value = record.hours_used;
         document.getElementById('form_manual_units').value = record.consumption_kwh;
-        document.getElementById('form_date').value = record.date_recorded;
+        document.getElementById('form_start_date').value = record.start_date || record.date_recorded;
+        document.getElementById('form_end_date').value = record.end_date || record.date_recorded;
         
         const select = document.getElementById('appliance_select');
         if (record.appliance_id) {
             select.value = record.appliance_id;
             toggleFormFields(record.appliance_id);
+        } else if (record.appliance_name === 'Manual Input') {
+            select.value = '';
+            toggleApplianceSelection(record.consumption_kwh);
         } else {
             select.value = 'other';
             toggleFormFields('other');
@@ -357,6 +411,8 @@ $history = $history_stmt->fetchAll();
         document.getElementById('form_submit_btn').name = 'add_consumption';
         document.getElementById('form_submit_btn').innerText = 'Add Usage';
         document.getElementById('form_cancel_btn').style.display = 'none';
+        document.getElementById('appliance_select').disabled = false;
+        document.getElementById('form_hours_used').disabled = false;
         toggleFormFields('');
     }
 
