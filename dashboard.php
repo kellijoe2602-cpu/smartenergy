@@ -148,6 +148,9 @@ $appliance_count = $count_appliances_stmt->fetch()['count'] ?? 0;
 $history_stmt = $pdo->prepare("SELECT * FROM energy_consumption WHERE user_id = ? ORDER BY date_recorded DESC LIMIT 10");
 $history_stmt->execute([$user_id]);
 $history = $history_stmt->fetchAll();
+
+// Get ML Alerts
+$usage_alerts = getUsageAlerts($pdo, $user_id, $monthly_consumption);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -176,7 +179,7 @@ $history = $history_stmt->fetchAll();
     </nav>
 
     <main class="main-content">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
             <h1>Energy Dashboard</h1>
             <a href="export_pdf.php" target="_blank" class="btn btn-pdf">
                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="margin-right: 8px;">
@@ -185,6 +188,27 @@ $history = $history_stmt->fetchAll();
                 Export PDF Report
             </a>
         </div>
+
+        <?php if (!empty($usage_alerts)): ?>
+            <div class="alerts-section" style="margin-bottom: 2rem;">
+                <?php foreach ($usage_alerts as $alert): ?>
+                    <div class="alert alert-<?php echo $alert['type']; ?>" style="
+                        padding: 1rem; 
+                        margin-bottom: 1rem; 
+                        border-radius: 0.5rem; 
+                        border-left: 5px solid <?php echo $alert['type'] === 'warning' ? '#f59e0b' : '#ef4444'; ?>;
+                        background: <?php echo $alert['type'] === 'warning' ? '#fffbeb' : '#fef2f2'; ?>;
+                        color: <?php echo $alert['type'] === 'warning' ? '#92400e' : '#991b1b'; ?>;
+                        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+                        display: flex;
+                        align-items: center;
+                    ">
+                        <span style="font-size: 1.5rem; margin-right: 1rem;"><?php echo $alert['type'] === 'warning' ? '⚠️' : '🚨'; ?></span>
+                        <div><?php echo $alert['message']; ?></div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
         
         <div class="stats-grid">
             <div class="stat-card">
